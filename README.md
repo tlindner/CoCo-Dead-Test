@@ -149,6 +149,8 @@ with this image, observing the specific board's socket pinout and electrical
 requirements; equal capacity alone does not guarantee compatibility. Disconnect
 power before changing ROMs. This ROM does not boot BASIC.
 
+When using OneROM, program it as a **2364** with **CS1 logic low**.
+
 ## Design
 
 There are no RAM variables, stack operations, or dependencies on either original
