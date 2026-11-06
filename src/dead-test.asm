@@ -11,8 +11,27 @@ VECTOR_BASE     equ     $bff0
 PIA1_CRA        equ     $ff21
 MOTOR_OFF       equ     $34
 MOTOR_BIT       equ     $08
-HALF_PERIODS    equ     50              ; 25 on/off cycles, about 50 Hz
-DELAY_COUNT     equ     1117
+HALF_PERIODS    equ     10              ; 5 on/off cycles, about 10 Hz
+DELAY_COUNT     equ     5591
+
+; Keep the visible lower-page screen out of the main sweeps. The screen
+; descriptor starts at $0400, so it never crosses either skip boundary.
+skip_screen_up  macro
+                cmpx    #$0400
+                bne     skip_up_done\1
+                cmpb    #0
+                bne     skip_up_done\1
+                ldx     #$0600
+skip_up_done\1
+                endm
+skip_screen_down macro
+                cmpx    #$0600
+                bne     skip_down_done\1
+                cmpb    #0
+                bne     skip_down_done\1
+                ldx     #$0400
+skip_down_done\1
+                endm
 
 ; Inline renderers need neither a stack nor a RAM cursor. HEX clobbers A/B/X.
 hexbyte         macro
@@ -44,7 +63,7 @@ start           orcc    #$50            ; Mask IRQ/FIRQ; never initialize S.
 
 ; At reset speed (~894886 Hz NTSC), each half-period is 8*N+15 cycles:
 ; EORA 2 + STA 5 + LDX 3 + N*(LEAX 5 + BNE 3) + DECB 2 + BNE 3.
-; N=1117 gives 8951 cycles (~10.002 ms); 50 periods take ~0.5001 s.
+; N=5591 gives 44743 cycles (~49.999 ms); 10 periods take ~0.5000 s.
 ; PAL machines are close to this duration, but not cycle-identical in seconds.
 click           eora    #MOTOR_BIT
                 sta     >PIA1_CRA        ; Toggle only CA2's forced output level.
@@ -230,7 +249,7 @@ print_status    lda     ,y+
                 sta     ,x+
                 bra     print_status
 
-; Separate the countable size code from the initial rapid alive burst.
+; Separate the countable size code from the initial alive burst.
 ; 1/2/3/4/5 pulses = 4/8/16/32/64K. Six pulses = RAM/configuration error.
 signal_size     tfr     b,dp            ; Preserve capacity code through pulses.
                 ldx     #55930          ; ~0.5 second quiet separator.
@@ -238,16 +257,22 @@ signal_size     tfr     b,dp            ; Preserve capacity code through pulses.
                 bra     wait_x
 size_pulse      lda     #$3c
                 sta     >PIA1_CRA
-                ldx     #16779          ; ~150 ms on (relay has time to move).
+                ldx     #22372          ; ~200 ms on (relay has time to move).
                 ldu     #size_off
                 bra     wait_x
 size_off        lda     #MOTOR_OFF
                 sta     >PIA1_CRA
-                ldx     #22372          ; ~200 ms off between pulses.
+                ldx     #33558          ; ~300 ms off between pulses.
                 ldu     #size_next
                 bra     wait_x
 size_next       decb
                 bne     size_pulse
+                ldb     #2             ; Hold the RAM report for ~1 more second.
+size_hold       ldx     #55930
+                ldu     #size_hold_next
+                bra     wait_x
+size_hold_next  decb
+                bne     size_hold
                 jmp     march_start
 wait_x          leax    -1,x
                 bne     wait_x
@@ -257,7 +282,8 @@ wait_x          leax    -1,x
 idle            bra     idle
 
 ; Y points to a ROM extent descriptor: exclusive CPU end, upper-page flag,
-; two printable capacity digits. U counts completed passes modulo 65536.
+; two printable capacity digits, inclusive CPU start. Each main descriptor
+; follows its screen descriptor. U counts completed passes modulo 65536.
 ; P1 only switches at page boundaries; TY remains zero, so ROM stays visible.
 march_start     tfr     dp,a
                 cmpa    #6
@@ -276,26 +302,28 @@ march_start     tfr     dp,a
                 beq     march_ready
                 ldy     #march64
 march_ready     ldu     #0
+                leay    -7,y           ; Test video RAM first, then restore progress.
 
 ; March U plus final verification: up(w0); up(r0,w1,r1,w0); up(r0,w1);
 ; down(r1,w0,r0,w1); down(r1,w0); up(r0). 14 accesses/byte.
 ; B is the physical page (0/1), NOT a RAM variable. DP identifies the read
 ; checkpoint (1..7), allowing a failure to name the precise operation.
-march_repeat    ldx     #0
+march_repeat    ldx     5,y
                 ldb     #0
                 lda     #0
 mu0_cell        sta     ,x
                 leax    1,x
+                skip_screen_up 0
                 cmpx    ,y
-                bne     mu0_cell
+                lbne    mu0_cell
                 cmpb    2,y
                 beq     mu1_start
                 ldb     #1
                 sta     >$ffd5
-                ldx     #0
+                ldx     5,y
                 bra     mu0_cell
 
-mu1_start       ldx     #0
+mu1_start       ldx     5,y
                 ldb     #0
                 lda     2,y
                 beq     mu1_cell
@@ -315,16 +343,17 @@ mu1_cell        lda     #1
                 lda     #0
                 sta     ,x
                 leax    1,x
+                skip_screen_up 1
                 cmpx    ,y
-                bne     mu1_cell
+                lbne    mu1_cell
                 cmpb    2,y
                 beq     mu2_start
                 ldb     #1
                 sta     >$ffd5
-                ldx     #0
+                ldx     5,y
                 bra     mu1_cell
 
-mu2_start       ldx     #0
+mu2_start       ldx     5,y
                 ldb     #0
                 lda     2,y
                 beq     mu2_cell
@@ -337,13 +366,14 @@ mu2_cell        lda     #3
                 lda     #$ff
                 sta     ,x
                 leax    1,x
+                skip_screen_up 2
                 cmpx    ,y
-                bne     mu2_cell
+                lbne    mu2_cell
                 cmpb    2,y
                 beq     mu3_start
                 ldb     #1
                 sta     >$ffd5
-                ldx     #0
+                ldx     5,y
                 bra     mu2_cell
 
 mu3_start       ldx     ,y
@@ -363,8 +393,9 @@ mu3_cell        leax    -1,x
                 lbne    march_fail
                 lda     #$ff
                 sta     ,x
-                cmpx    #0
-                bne     mu3_cell
+                skip_screen_down 3
+                cmpx    5,y
+                lbne    mu3_cell
                 cmpb    #0
                 beq     mu4_start
                 ldb     #0
@@ -384,8 +415,9 @@ mu4_cell        leax    -1,x
                 lbne    march_fail
                 lda     #0
                 sta     ,x
-                cmpx    #0
-                bne     mu4_cell
+                skip_screen_down 4
+                cmpx    5,y
+                lbne    mu4_cell
                 cmpb    #0
                 beq     mu5_start
                 ldb     #0
@@ -393,7 +425,7 @@ mu4_cell        leax    -1,x
                 ldx     ,y
                 bra     mu4_cell
 
-mu5_start       ldx     #0
+mu5_start       ldx     5,y
                 ldb     #0
 mu5_cell        lda     #7
                 tfr     a,dp
@@ -401,16 +433,25 @@ mu5_cell        lda     #7
                 cmpa    #0
                 lbne    march_fail
                 leax    1,x
+                skip_screen_up 5
                 cmpx    ,y
-                bne     mu5_cell
+                lbne    mu5_cell
                 cmpb    2,y
                 beq     march_pass
                 ldb     #1
                 sta     >$ffd5
-                ldx     #0
+                ldx     5,y
                 bra     mu5_cell
 
-march_pass      leau    1,u
+march_pass      lda     5,y
+                beq     main_pass
+                leay    7,y            ; Screen passed: restore the running display.
+                lda     #0
+                tfr     a,dp
+                bra     pass_display
+main_pass       leau    1,u
+                lda     #1
+                tfr     a,dp
                 lda     2,y
                 beq     pass_display
                 sta     >$ffd4
@@ -449,8 +490,11 @@ pass_clear      sta     ,x+
                 ora     #$40
                 sta     >$0446
                 glyph   'K,$0447
+                tfr     dp,a
+                cmpa    #0
+                lbeq    march_repeat
                 ; One audible heartbeat only after a fully successful pass.
-                ; Use the same ~150 ms on time as the size report, then leave
+                ; Pulse for ~150 ms, then leave
                 ; the motor off for the ~1 second readable-result hold.
                 lda     #$3c
                 sta     >PIA1_CRA
@@ -465,6 +509,7 @@ pass_wait       leax    -1,x
                 bne     pass_wait
                 decb
                 bne     pass_hold
+                leay    -7,y           ; Begin the next pass with video RAM.
                 jmp     march_repeat
 
 ; Capture the failing read before any display writes. U=actual:page,
@@ -540,21 +585,46 @@ hex_digits      fcb     $70,$71,$72,$73,$74,$75,$76,$77,$78,$79
                 fcc     "ABCDEF"
 expected_bytes  fcb     0,0,$ff,0,$ff,0,$ff,0
 
+                fdb     $0600          ; Separate, brief video-memory March-U.
+                fcb     0
+                fcc     " 4"
+                fdb     $0400
 march4          fdb     $1000
                 fcb     0
                 fcc     " 4"
+                fdb     0
+                fdb     $0600          ; Separate, brief video-memory March-U.
+                fcb     0
+                fcc     " 8"
+                fdb     $0400
 march8          fdb     $2000
                 fcb     0
                 fcc     " 8"
+                fdb     0
+                fdb     $0600          ; Separate, brief video-memory March-U.
+                fcb     0
+                fcc     "16"
+                fdb     $0400
 march16         fdb     $4000
                 fcb     0
                 fcc     "16"
+                fdb     0
+                fdb     $0600          ; Separate, brief video-memory March-U.
+                fcb     0
+                fcc     "32"
+                fdb     $0400
 march32         fdb     $8000
                 fcb     0
                 fcc     "32"
+                fdb     0
+                fdb     $0600          ; Separate, brief video-memory March-U.
+                fcb     0
+                fcc     "64"
+                fdb     $0400
 march64         fdb     $8000
                 fcb     1
                 fcc     "64"
+                fdb     0
 
 ; Test addresses come from the SAM's row/column multiplexing, not RAMSZ.
 ; $0040/$0080 expose missing row bits in 4K/16K chips in 64K mode.

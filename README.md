@@ -6,17 +6,18 @@ It replaces the **Color BASIC ROM**, mapped at **$A000–$BFFF**, not the
 Extended BASIC ROM or a cartridge ROM.
 
 On hardware reset it masks IRQ/FIRQ, forces the cassette motor relay off, then
-commands 25 on/off cycles at approximately 50 Hz over **0.5 seconds**, without
+commands 5 on/off cycles at approximately 10 Hz over **0.5 seconds**, without
 accessing RAM. It then determines RAM capacity, prints the result on the default
 32-column text screen at **$0400**, and signals the result with slower relay
 pulses. Successful sizing then starts a repeating, destructive March-U test.
-Reset restarts the diagnostic. The initial rapid burst may sound like a
-buzz; the later pulses are deliberately slow enough to count.
+Reset restarts the diagnostic. The initial burst uses about 50 ms on and
+50 ms off per click; the later pulses are deliberately slower so they are
+easy to count.
 
 ## Results
 
 After the alive burst and RAM probes, there is a half-second quiet separator,
-then one group of pulses (150 ms on, 200 ms off). Count **on/off pairs**, not
+then one group of pulses (200 ms on, 300 ms off). Count **on/off pairs**, not
 individual mechanical clicks:
 
 | Screen | Relay pulses |
@@ -29,7 +30,9 @@ individual mechanical clicks:
 | `RAM ERROR` | 6 |
 
 The relay is left off between reports. On sizing failure, `RAM ERROR`
-stays on screen until reset; otherwise the RAM test begins. With broken
+stays on screen until reset; otherwise an additional one-second pause follows
+the pulse group before the RAM test begins. The relay stays off during this
+pause, leaving the RAM amount and jumper status readable. With broken
 RAM or video hardware, the screen may be unreadable; the relay report still
 requires no working RAM. 8K and dual-bank 32K cover the configurations described
 by the SAM, including nonstandard machines. Standard CoCo motherboard wiring
@@ -40,8 +43,8 @@ The third screen row reports **`RAM JUMPER: OK`** or
 detected DRAM geometry. On a RAM-detection failure it prints
 **`RAM JUMPER: UNKNOWN`**, rather than blaming the jumper without evidence.
 The relay code reports RAM capacity only; it does not change for a bad jumper.
-The jumper line is shown during the initial size report, before testing overwrites
-the screen.
+The jumper line is shown during the initial size report, before the March-U
+progress display replaces it.
 
 ## Repeating RAM test
 
@@ -62,8 +65,15 @@ up(r0)
 ```
 
 Operations within each element run on one byte before advancing to the next.
-The complete sequence costs 14 memory accesses per byte. After each successful
-sequence the screen shows, for example:
+Each pass first runs the complete sequence on the 512-byte screen buffer at
+$0400–$05FF. It then restores the progress display and runs the complete sequence
+on all remaining RAM, skipping that buffer in the lower page only. The upper
+32K page on 64K machines is tested in full. This keeps the display readable during most of the
+test, with a brief interruption while screen RAM is tested. Splitting these
+regions reduces coverage of coupling faults between screen RAM and other RAM.
+
+The complete sequence costs 14 test accesses per byte, plus display writes.
+During testing and after each successful pass, the screen shows, for example:
 
 ```
 MARCH-U
@@ -77,9 +87,10 @@ and wraps from `FFFF` to `0000`. Each complete successful pass gives one
 and the status readable before the next pass. This heartbeat means the test is
 still running and that the preceding pass found no errors. Its interval depends
 on RAM capacity and the time taken by a complete pass.
-**Screen noise during testing is expected**:
-the video buffer itself is under test. The count is stored in a CPU register,
-not in potentially faulty RAM.
+The progress display shows the number of **completed** passes, starting at
+`0000` during the first pass. Brief screen noise occurs at the beginning of
+each pass while the video buffer itself is tested. The count is stored in a
+CPU register, not in potentially faulty RAM.
 
 The first failed comparison stops testing until reset and displays:
 
@@ -147,9 +158,9 @@ bits 5:3 are `110` / `111`. CA2 controls the cassette motor relay. No PIA port
 data-direction setup or PIA reads are required; CA1 interrupts stay disabled.
 The SAM clock mode stays at its reset setting (slow, with refresh and video).
 
-Each half-period uses 8951 CPU cycles; the entire burst uses 447550 cycles
-(about 0.5001 s at the NTSC reset clock of 0.894886 MHz), plus a few setup
-cycles. PAL timing differs slightly. There are 50 relay transitions; the last
+Each half-period uses 44743 CPU cycles; the entire burst uses 447430 cycles
+(about 0.5000 s at the NTSC reset clock of 0.894886 MHz), plus a few setup
+cycles. PAL timing differs slightly. There are 10 relay transitions; the last
 transition turns it off, followed by the final half-period delay and RAM sizing.
 
 ### RAM sizing with minimal storage
@@ -216,15 +227,20 @@ RAM, aliased banks/pages, and a stuck data bit, as well as vectors, access
 restrictions, probe footprint, both displayed lines, relay counts/timing, and
 termination on sizing failure. It also rejects any attempt to read RAMSZ before
 sizing is complete. March tests check two complete passes against an independent
-ordered read/write trace for every supported capacity/geometry, plus injected
-failures at all seven read checkpoints, screen RAM, 64K page boundaries and the
-highest address. Tests also check heartbeat counts and pulse duration, including
+ordered read/write trace for the screen and remaining RAM in every supported
+capacity/geometry. They check that the main sweeps preserve the progress display
+and inject failures at all seven read checkpoints, screen RAM, 64K page boundaries
+and the highest address. Tests also check heartbeat counts and pulse duration, including
 cessation after a successful pass followed by a failure.
 Failure diagnostics and preservation of the ROM mapping are
 checked as well. The instruction-level tests can take several minutes.
-It is **not** a complete hardware emulator; real CoCo and mechanical relay
-operation still need testing. Fixed open-bus values in the tests do not reproduce
-all behavior of an electrically floating or faulty bus.
+The current ROM has also been tested successfully on real hardware, including
+the readable progress display during March-U. This does not establish hardware
+coverage of every supported RAM configuration or injected fault.
+
+The Python model is **not** a complete hardware emulator. Fixed open-bus values
+in the tests do not reproduce all behavior of an electrically floating or faulty
+bus.
 
 ## Hardware references
 

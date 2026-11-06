@@ -24,6 +24,8 @@ class Machine:
         self.ddr = {0xFF02: 0, 0xFF22: 0}
         self.reg = dict(a=0, b=0, x=0, y=0, u=0, dp=0)
         self.marching = False
+        self.progress_checks = 0
+        self.progress_display = None
         self.trace = []
         self.inject = None
         self.inject_after = 0
@@ -120,6 +122,8 @@ class Machine:
             if self.marching and SYMBOLS['mu0_cell'] <= self.instruction < SYMBOLS['march_pass']:
                 physical_address = address + (0x8000 if self.sam & 0x400 and self.kind == '64x1' else 0)
                 self.trace.append(('w', physical_address, value))
+                if self.progress_display is not None:
+                    assert not 0x400 <= physical_address < 0x600, 'Main sweep overwrote progress'
             if 0x400 <= address < 0x600:
                 self.screen_output[address - 0x400] = value
             if physical is not None:
@@ -185,6 +189,17 @@ class Machine:
                 return
             if march and self.pc == SYMBOLS['march_repeat'] and self.reg['u'] == passes:
                 return
+            if march and self.pc == SYMBOLS['march_repeat']:
+                start = int.from_bytes(self.rom[self.reg['y'] - 0xA000 + 5:
+                                               self.reg['y'] - 0xA000 + 7], 'big')
+                if start == 0:
+                    self.progress_checks += 1
+                    assert screen_line(self, 0) == 'MARCH-U'
+                    assert screen_line(self, 1) == f"PASSES: {self.reg['u']:04X}"
+                    self.progress_display = bytes(self.ram[self.ram_address(a)]
+                                                  for a in range(0x400, 0x600))
+                else:
+                    self.progress_display = None
             address = self.pc
             self.instruction = address
             op = self.fetch()
@@ -300,17 +315,19 @@ def check(rom, size, kind, expected, pulses, fault=None, jumper=None):
     machine = Machine(rom, size, kind, fault, jumper)
     machine.run()
     relay = machine.relay
-    assert [value for _, value in relay[:51]] == [0x34] + [0x3C, 0x34] * 25
-    assert [relay[i + 1][0] - relay[i][0] for i in range(1, 50)] == [8951] * 49
-    assert machine.first_ram_cycle > 447550, "RAM touched during alive burst"
-    assert [value for _, value in relay[51:]] == [0x3C, 0x34] * pulses
-    assert (relay[51][0] - relay[50][0]) / 894886 > 0.5
-    for index in range(51, len(relay), 2):
+    assert [value for _, value in relay[:11]] == [0x34] + [0x3C, 0x34] * 5
+    assert [relay[i + 1][0] - relay[i][0] for i in range(1, 10)] == [44743] * 9
+    assert machine.first_ram_cycle > 447430, "RAM touched during alive burst"
+    assert [value for _, value in relay[11:]] == [0x3C, 0x34] * pulses
+    assert (relay[11][0] - relay[10][0]) / 894886 > 0.5
+    for index in range(11, len(relay), 2):
         duration = (relay[index + 1][0] - relay[index][0]) / 894886
-        assert 0.149 < duration < 0.151
+        assert 0.199 < duration < 0.201
         if index + 2 < len(relay):
             gap = (relay[index + 2][0] - relay[index + 1][0]) / 894886
-            assert 0.199 < gap < 0.201
+            assert 0.299 < gap < 0.301
+    report_hold = (machine.cycles - relay[-1][0]) / 894886
+    assert 1.299 < report_hold < 1.301, report_hold
     assert machine.screen_writes == set(range(0x400, 0x600))
     assert machine.sam & 7 == 0 and ((machine.sam >> 3) & 127) == 2
     assert machine.pia[0xFF22] == 0
@@ -346,11 +363,15 @@ def march_trace(size):
                 (True, [('r', 255), ('w', 0), ('r', 0), ('w', 255)]),
                 (True, [('r', 255), ('w', 0)]),
                 (False, [('r', 0)])]
-    for descending, operations in elements:
-        addresses = range(size - 1, -1, -1) if descending else range(size)
-        for address in addresses:
-            for operation, value in operations:
-                yield operation, address, value
+    # The video buffer gets its complete sequence first, then the remaining
+    # addresses get theirs without disturbing the restored progress display.
+    for region in (range(0x400, 0x600),
+                   [a for a in range(size) if not 0x400 <= a < 0x600]):
+        for descending, operations in elements:
+            addresses = reversed(region) if descending else region
+            for address in addresses:
+                for operation, value in operations:
+                    yield operation, address, value
 
 
 def check_march(rom, capacity, kind, checkpoint=None, address=0, inject_after=0):
@@ -377,6 +398,7 @@ def check_march(rom, capacity, kind, checkpoint=None, address=0, inject_after=0)
     if checkpoint is None:
         expected = list(march_trace(capacity * 1024))
         assert machine.trace == expected * 2, 'Wrong March-U ordering/coverage'
+        assert machine.progress_checks == 2, 'Progress missing during main sweeps'
         assert screen_line(machine, 0) == 'MARCH-U'
         assert screen_line(machine, 1) == 'PASSES: 0002'
         assert screen_line(machine, 2) == f'RAM: {capacity:2}K'
