@@ -1,4 +1,4 @@
-# CoCo Dead Test ROM
+# CoCo Dead Test ROM 1.0
 
 A sign-of-life, RAM-sizing and repeating March-U RAM-test ROM for the
 **Color Computer 1 or 2**.
@@ -8,11 +8,14 @@ Extended BASIC ROM or a cartridge ROM.
 On hardware reset it masks IRQ/FIRQ, forces the cassette motor relay off, then
 commands 5 on/off cycles at approximately 10 Hz over **0.5 seconds**, without
 accessing RAM. It then determines RAM capacity, prints the result on the default
-32-column text screen at **$0400**, and signals the result with slower relay
+32-column text screen at **$0000**, and signals the result with slower relay
 pulses. Successful sizing then starts a repeating, destructive March-U test.
 Reset restarts the diagnostic. The initial burst uses about 50 ms on and
 50 ms off per click; the later pulses are deliberately slower so they are
 easy to count.
+
+All report, March-U progress, and failure screens show `VERSION 1.0` on the
+bottom row.
 
 ## Results
 
@@ -66,10 +69,11 @@ up(r0)
 
 Operations within each element run on one byte before advancing to the next.
 Each pass first runs the complete sequence on the 512-byte screen buffer at
-$0400–$05FF. It then restores the progress display and runs the complete sequence
-on all remaining RAM, skipping that buffer in the lower page only. The upper
-32K page on 64K machines is tested in full. This keeps the display readable during most of the
-test, with a brief interruption while screen RAM is tested. Splitting these
+$0000–$01FF. It then restores the progress display and runs the complete sequence
+on the contiguous remaining region from $0200 through the detected end. The upper
+32K page on 64K machines is tested in full. This keeps the display readable
+during most of the test, with a brief interruption while screen RAM is tested.
+Splitting these
 regions reduces coverage of coupling faults between screen RAM and other RAM.
 
 The complete sequence costs 14 test accesses per byte, plus display writes.
@@ -191,7 +195,7 @@ odd control addresses set bits and even addresses clear them, regardless of data
    accessing CPU address $0000. **TY remains zero**: ROM is never banked out.
    Restore P1=0 afterward; the LS785 16K x 4 case retains P1=1 because it
    selects that geometry.
-5. Set internal alphanumeric video mode and the SAM display offset to $0400,
+5. Set internal alphanumeric video mode and the SAM display offset to $0000,
    clear the 512-byte screen, and write the result directly from ROM.
 6. Only after sizing, strobe PIA0 PB6 ($FF02 bit 6) high and low and read RAMSZ
    at PIA1 PB2 ($FF22 bit 2). Compare both responses against the detected geometry:
@@ -234,9 +238,11 @@ and the highest address. Tests also check heartbeat counts and pulse duration, i
 cessation after a successful pass followed by a failure.
 Failure diagnostics and preservation of the ROM mapping are
 checked as well. The instruction-level tests can take several minutes.
-The current ROM has also been tested successfully on real hardware, including
-the readable progress display during March-U. This does not establish hardware
-coverage of every supported RAM configuration or injected fault.
+An earlier version using a screen buffer at $0400 was tested successfully on
+real hardware, including the readable progress display during March-U. The
+current layout with the screen at $0000 still needs hardware verification.
+The earlier hardware test does not establish coverage of every supported RAM
+configuration or injected fault.
 
 The Python model is **not** a complete hardware emulator. Fixed open-bus values
 in the tests do not reproduce all behavior of an electrically floating or faulty

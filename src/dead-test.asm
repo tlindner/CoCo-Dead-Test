@@ -13,25 +13,8 @@ MOTOR_OFF       equ     $34
 MOTOR_BIT       equ     $08
 HALF_PERIODS    equ     10              ; 5 on/off cycles, about 10 Hz
 DELAY_COUNT     equ     5591
-
-; Keep the visible lower-page screen out of the main sweeps. The screen
-; descriptor starts at $0400, so it never crosses either skip boundary.
-skip_screen_up  macro
-                cmpx    #$0400
-                bne     skip_up_done\1
-                cmpb    #0
-                bne     skip_up_done\1
-                ldx     #$0600
-skip_up_done\1
-                endm
-skip_screen_down macro
-                cmpx    #$0600
-                bne     skip_down_done\1
-                cmpb    #0
-                bne     skip_down_done\1
-                ldx     #$0400
-skip_down_done\1
-                endm
+VERSION_MAJOR   equ     '1
+VERSION_MINOR   equ     '0
 
 ; Inline renderers need neither a stack nor a RAM cursor. HEX clobbers A/B/X.
 hexbyte         macro
@@ -52,6 +35,20 @@ glyph           macro
                 lda     #\1
                 ora     #$40
                 sta     >\2
+                endm
+
+; Shared footer on every report/progress/failure screen. Clobbers A only.
+version_footer  macro
+                glyph   'V,$01e0
+                glyph   'E,$01e1
+                glyph   'R,$01e2
+                glyph   'S,$01e3
+                glyph   'I,$01e4
+                glyph   'O,$01e5
+                glyph   'N,$01e6
+                glyph   VERSION_MAJOR,$01e8
+                glyph   '.,$01e9
+                glyph   VERSION_MINOR,$01ea
                 endm
 
                 org     ROM_BASE
@@ -199,18 +196,19 @@ report          ldb     ,y+
                 sta     >$ffc0          ; V2:V0=000: 32 x 16 text.
                 sta     >$ffc2
                 sta     >$ffc4
-                sta     >$ffc6          ; F6:F0=0000010: screen starts at $0400.
-                sta     >$ffc9
+                sta     >$ffc6          ; F6:F0=0000000: screen starts at $0000.
+                sta     >$ffc8
                 sta     >$ffca
                 sta     >$ffcc
                 sta     >$ffce
                 sta     >$ffd0
                 sta     >$ffd2
-                ldx     #$0400
+                ldx     #$0000
                 lda     #$60           ; VDG blank, as used by Color BASIC CLS.
 clear_screen    sta     ,x+
-                cmpx    #$0600
+                cmpx    #$0200
                 bne     clear_screen
+                version_footer
 
 ; Read RAMSZ only AFTER independent sizing. A wrong jumper affects this status
 ; line, never geometry or capacity selection. Compare both strobe levels.
@@ -235,14 +233,14 @@ sense_low       lda     #0
 jumper_unknown_result
                 leay    2,y
                 ldu     #jumper_unknown
-sense_done      ldx     #$0400
+sense_done      ldx     #$0000
 print_message   lda     ,y+
                 beq     print_jumper
                 ora     #$40           ; Uppercase ASCII -> normal VDG text.
                 sta     ,x+
                 bra     print_message
 print_jumper    tfr     u,y
-                ldx     #$0440          ; Third text row, beneath RAM amount.
+                ldx     #$0040          ; Third text row, beneath RAM amount.
 print_status    lda     ,y+
                 beq     signal_size
                 ora     #$40
@@ -313,14 +311,13 @@ march_repeat    ldx     5,y
                 lda     #0
 mu0_cell        sta     ,x
                 leax    1,x
-                skip_screen_up 0
                 cmpx    ,y
                 lbne    mu0_cell
                 cmpb    2,y
                 beq     mu1_start
                 ldb     #1
                 sta     >$ffd5
-                ldx     5,y
+                ldx     #0
                 bra     mu0_cell
 
 mu1_start       ldx     5,y
@@ -343,14 +340,13 @@ mu1_cell        lda     #1
                 lda     #0
                 sta     ,x
                 leax    1,x
-                skip_screen_up 1
                 cmpx    ,y
                 lbne    mu1_cell
                 cmpb    2,y
                 beq     mu2_start
                 ldb     #1
                 sta     >$ffd5
-                ldx     5,y
+                ldx     #0
                 bra     mu1_cell
 
 mu2_start       ldx     5,y
@@ -366,14 +362,13 @@ mu2_cell        lda     #3
                 lda     #$ff
                 sta     ,x
                 leax    1,x
-                skip_screen_up 2
                 cmpx    ,y
                 lbne    mu2_cell
                 cmpb    2,y
                 beq     mu3_start
                 ldb     #1
                 sta     >$ffd5
-                ldx     5,y
+                ldx     #0
                 bra     mu2_cell
 
 mu3_start       ldx     ,y
@@ -393,9 +388,12 @@ mu3_cell        leax    -1,x
                 lbne    march_fail
                 lda     #$ff
                 sta     ,x
-                skip_screen_down 3
+                cmpb    #0
+                bne     mu3_upper_end
                 cmpx    5,y
-                lbne    mu3_cell
+                bra     mu3_end
+mu3_upper_end   cmpx    #0
+mu3_end         lbne    mu3_cell
                 cmpb    #0
                 beq     mu4_start
                 ldb     #0
@@ -415,9 +413,12 @@ mu4_cell        leax    -1,x
                 lbne    march_fail
                 lda     #0
                 sta     ,x
-                skip_screen_down 4
+                cmpb    #0
+                bne     mu4_upper_end
                 cmpx    5,y
-                lbne    mu4_cell
+                bra     mu4_end
+mu4_upper_end   cmpx    #0
+mu4_end         lbne    mu4_cell
                 cmpb    #0
                 beq     mu5_start
                 ldb     #0
@@ -433,18 +434,17 @@ mu5_cell        lda     #7
                 cmpa    #0
                 lbne    march_fail
                 leax    1,x
-                skip_screen_up 5
                 cmpx    ,y
                 lbne    mu5_cell
                 cmpb    2,y
                 beq     march_pass
                 ldb     #1
                 sta     >$ffd5
-                ldx     5,y
+                ldx     #0
                 bra     mu5_cell
 
 march_pass      lda     5,y
-                beq     main_pass
+                bne     main_pass
                 leay    7,y            ; Screen passed: restore the running display.
                 lda     #0
                 tfr     a,dp
@@ -455,41 +455,42 @@ main_pass       leau    1,u
                 lda     2,y
                 beq     pass_display
                 sta     >$ffd4
-pass_display    ldx     #$0400
+pass_display    ldx     #$0000
                 lda     #$60
 pass_clear      sta     ,x+
-                cmpx    #$0600
+                cmpx    #$0200
                 bne     pass_clear
-                glyph   'M,$0400
-                glyph   'A,$0401
-                glyph   'R,$0402
-                glyph   'C,$0403
-                glyph   'H,$0404
-                glyph   '-,$0405
-                glyph   'U,$0406
-                glyph   'P,$0420
-                glyph   'A,$0421
-                glyph   'S,$0422
-                glyph   'S,$0423
-                glyph   'E,$0424
-                glyph   'S,$0425
-                glyph   ':,$0426
+                version_footer
+                glyph   'M,$0000
+                glyph   'A,$0001
+                glyph   'R,$0002
+                glyph   'C,$0003
+                glyph   'H,$0004
+                glyph   '-,$0005
+                glyph   'U,$0006
+                glyph   'P,$0020
+                glyph   'A,$0021
+                glyph   'S,$0022
+                glyph   'S,$0023
+                glyph   'E,$0024
+                glyph   'S,$0025
+                glyph   ':,$0026
                 tfr     u,d
-                hexbyte $0428
+                hexbyte $0028
                 tfr     u,d
                 tfr     b,a
-                hexbyte $042a
-                glyph   'R,$0440
-                glyph   'A,$0441
-                glyph   'M,$0442
-                glyph   ':,$0443
+                hexbyte $002a
+                glyph   'R,$0040
+                glyph   'A,$0041
+                glyph   'M,$0042
+                glyph   ':,$0043
                 lda     3,y
                 ora     #$40
-                sta     >$0445
+                sta     >$0045
                 lda     4,y
                 ora     #$40
-                sta     >$0446
-                glyph   'K,$0447
+                sta     >$0046
+                glyph   'K,$0047
                 tfr     dp,a
                 cmpa    #0
                 lbeq    march_repeat
@@ -524,107 +525,108 @@ fail_page_ready
                 cmpb    #0
                 beq     fail_lower
                 leay    $8000,y         ; Report physical, not window address.
-fail_lower      ldx     #$0400
+fail_lower      ldx     #$0000
                 lda     #$60
 fail_clear      sta     ,x+
-                cmpx    #$0600
+                cmpx    #$0200
                 bne     fail_clear
+                version_footer
                 tfr     dp,b
                 ldx     #expected_bytes
                 lda     b,x
                 tfr     a,dp            ; Expected byte now kept in DP.
                 tfr     b,a
                 ora     #$70
-                sta     >$0467          ; CHECK: n
-                glyph   'F,$0400
-                glyph   'A,$0401
-                glyph   'I,$0402
-                glyph   'L,$0403
-                glyph   'A,$0420
-                glyph   'D,$0421
-                glyph   'D,$0422
-                glyph   'R,$0423
-                glyph   ':,$0424
+                sta     >$0067          ; CHECK: n
+                glyph   'F,$0000
+                glyph   'A,$0001
+                glyph   'I,$0002
+                glyph   'L,$0003
+                glyph   'A,$0020
+                glyph   'D,$0021
+                glyph   'D,$0022
+                glyph   'R,$0023
+                glyph   ':,$0024
                 tfr     y,d
-                hexbyte $0426
+                hexbyte $0026
                 tfr     y,d
                 tfr     b,a
-                hexbyte $0428
-                glyph   'C,$0460
-                glyph   'H,$0461
-                glyph   'E,$0462
-                glyph   'C,$0463
-                glyph   'K,$0464
-                glyph   ':,$0465
-                glyph   'E,$0480
-                glyph   'X,$0481
-                glyph   'P,$0482
-                glyph   ':,$0483
+                hexbyte $0028
+                glyph   'C,$0060
+                glyph   'H,$0061
+                glyph   'E,$0062
+                glyph   'C,$0063
+                glyph   'K,$0064
+                glyph   ':,$0065
+                glyph   'E,$0080
+                glyph   'X,$0081
+                glyph   'P,$0082
+                glyph   ':,$0083
                 tfr     dp,a
-                hexbyte $0485
-                glyph   'G,$04a0
-                glyph   'O,$04a1
-                glyph   'T,$04a2
-                glyph   ':,$04a3
+                hexbyte $0085
+                glyph   'G,$00a0
+                glyph   'O,$00a1
+                glyph   'T,$00a2
+                glyph   ':,$00a3
                 tfr     u,d
-                hexbyte $04a5
-                glyph   'X,$04c0
-                glyph   'O,$04c1
-                glyph   'R,$04c2
-                glyph   ':,$04c3
+                hexbyte $00a5
+                glyph   'X,$00c0
+                glyph   'O,$00c1
+                glyph   'R,$00c2
+                glyph   ':,$00c3
                 tfr     u,d
                 tfr     dp,b
                 ; EOR through a ROM lookup: expected is either 00 or FF.
                 cmpb    #0
                 beq     fail_xor
                 coma
-fail_xor        hexbyte $04c5
+fail_xor        hexbyte $00c5
                 jmp     idle
 
 hex_digits      fcb     $70,$71,$72,$73,$74,$75,$76,$77,$78,$79
                 fcc     "ABCDEF"
 expected_bytes  fcb     0,0,$ff,0,$ff,0,$ff,0
 
-                fdb     $0600          ; Separate, brief video-memory March-U.
+                fdb     $0200          ; Separate, brief video-memory March-U.
                 fcb     0
                 fcc     " 4"
-                fdb     $0400
+                fdb     $0000
 march4          fdb     $1000
                 fcb     0
                 fcc     " 4"
-                fdb     0
-                fdb     $0600          ; Separate, brief video-memory March-U.
+                fdb     $0200
+                fdb     $0200          ; Separate, brief video-memory March-U.
                 fcb     0
                 fcc     " 8"
-                fdb     $0400
+                fdb     $0000
 march8          fdb     $2000
                 fcb     0
                 fcc     " 8"
-                fdb     0
-                fdb     $0600          ; Separate, brief video-memory March-U.
+                fdb     $0200
+                fdb     $0200          ; Separate, brief video-memory March-U.
                 fcb     0
                 fcc     "16"
-                fdb     $0400
+                fdb     $0000
 march16         fdb     $4000
                 fcb     0
                 fcc     "16"
-                fdb     0
-                fdb     $0600          ; Separate, brief video-memory March-U.
+                fdb     $0200
+                fdb     $0200          ; Separate, brief video-memory March-U.
                 fcb     0
                 fcc     "32"
-                fdb     $0400
+                fdb     $0000
 march32         fdb     $8000
                 fcb     0
                 fcc     "32"
-                fdb     0
-                fdb     $0600          ; Separate, brief video-memory March-U.
+                fdb     $0200
+                fdb     $0200          ; Separate, brief video-memory March-U.
                 fcb     0
                 fcc     "64"
-                fdb     $0400
+                fdb     $0000
 march64         fdb     $8000
                 fcb     1
                 fcc     "64"
-                fdb     0
+                fdb     $0200
 
 ; Test addresses come from the SAM's row/column multiplexing, not RAMSZ.
 ; $0040/$0080 expose missing row bits in 4K/16K chips in 64K mode.

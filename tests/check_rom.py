@@ -71,14 +71,15 @@ class Machine:
     def ram_access(self, address):
         if self.first_ram_cycle is None:
             self.first_ram_cycle = self.cycles
-        if 0x0400 <= address < 0x0600:
+        sizing = self.instruction < SYMBOLS['report'] and not self.marching
+        if not sizing and 0 <= address < 0x0200:
             self.screen_writes.add(address)
-        elif not self.marching:
+        elif sizing:
             assert address in (0, 0x20, 0x40, 0x80, 0x100, 0x800,
                                0x1000, 0x2000, 0x4000), hex(address)
             self.probes.add((address, (self.sam >> 10) & 1, (self.sam >> 13) & 3))
         physical = self.ram_address(address)
-        if not self.marching and not 0x0400 <= address < 0x0600 and physical is not None:
+        if sizing and physical is not None:
             self.probe_cells.add(physical)
         return physical
 
@@ -87,7 +88,8 @@ class Machine:
             assert not self.sam & 0x8000, "Executing ROM was banked out"
             return self.rom[address - 0xA000]
         if address < 0x8000:
-            assert self.marching or not 0x0400 <= address < 0x0600, "Unexpected screen RAM read"
+            assert (self.marching or self.instruction < SYMBOLS['report']
+                    or not 0 <= address < 0x0200), "Unexpected screen RAM read"
             physical = self.ram_access(address)
             if physical is None:
                 return 0 if self.fault == "open_zero" else 0xFF
@@ -123,9 +125,9 @@ class Machine:
                 physical_address = address + (0x8000 if self.sam & 0x400 and self.kind == '64x1' else 0)
                 self.trace.append(('w', physical_address, value))
                 if self.progress_display is not None:
-                    assert not 0x400 <= physical_address < 0x600, 'Main sweep overwrote progress'
-            if 0x400 <= address < 0x600:
-                self.screen_output[address - 0x400] = value
+                    assert not 0 <= physical_address < 0x200, 'Main sweep overwrote progress'
+            if self.instruction >= SYMBOLS['report'] and 0 <= address < 0x200:
+                self.screen_output[address] = value
             if physical is not None:
                 self.ram[physical] = value
         elif address == 0xFF21:
@@ -192,12 +194,13 @@ class Machine:
             if march and self.pc == SYMBOLS['march_repeat']:
                 start = int.from_bytes(self.rom[self.reg['y'] - 0xA000 + 5:
                                                self.reg['y'] - 0xA000 + 7], 'big')
-                if start == 0:
+                if start == 0x200:
                     self.progress_checks += 1
                     assert screen_line(self, 0) == 'MARCH-U'
+                    assert screen_line(self, 15) == 'VERSION 1.0'
                     assert screen_line(self, 1) == f"PASSES: {self.reg['u']:04X}"
                     self.progress_display = bytes(self.ram[self.ram_address(a)]
-                                                  for a in range(0x400, 0x600))
+                                                  for a in range(0x200))
                 else:
                     self.progress_display = None
             address = self.pc
@@ -328,8 +331,8 @@ def check(rom, size, kind, expected, pulses, fault=None, jumper=None):
             assert 0.299 < gap < 0.301
     report_hold = (machine.cycles - relay[-1][0]) / 894886
     assert 1.299 < report_hold < 1.301, report_hold
-    assert machine.screen_writes == set(range(0x400, 0x600))
-    assert machine.sam & 7 == 0 and ((machine.sam >> 3) & 127) == 2
+    assert machine.screen_writes == set(range(0x200))
+    assert machine.sam & 7 == 0 and ((machine.sam >> 3) & 127) == 0
     assert machine.pia[0xFF22] == 0
     expected_screen = bytearray(b"\x60" * 512)
     expected_screen[:len(expected)] = bytes(ord(char) | 0x40 for char in expected)
@@ -337,10 +340,11 @@ def check(rom, size, kind, expected, pulses, fault=None, jumper=None):
     status = "UNKNOWN" if pulses == 6 else "OK" if machine.jumper == geometry else "INCORRECT"
     status_text = f"RAM JUMPER: {status}"
     expected_screen[64:64 + len(status_text)] = bytes(ord(char) | 0x40 for char in status_text)
+    expected_screen[480:491] = bytes(ord(c) | 0x40 for c in 'VERSION 1.0')
     assert machine.screen_output == expected_screen, machine.screen_output[:96]
     # Also check actual RAM contents when the physical screen can work.
     if size and fault != "stuck_bit":
-        display = bytes(machine.ram[machine.ram_address(a)] for a in range(0x400, 0x600))
+        display = bytes(machine.ram[machine.ram_address(a)] for a in range(0x200))
         assert display == expected_screen, (display[:32], display[64:96])
     assert machine.sense_reads == (0 if pulses == 6 else 2)
     assert len(machine.probe_cells) <= (6 if fault is None else 12), machine.probe_cells
@@ -365,8 +369,8 @@ def march_trace(size):
                 (False, [('r', 0)])]
     # The video buffer gets its complete sequence first, then the remaining
     # addresses get theirs without disturbing the restored progress display.
-    for region in (range(0x400, 0x600),
-                   [a for a in range(size) if not 0x400 <= a < 0x600]):
+    for region in (range(0x200),
+                   range(0x200, size)):
         for descending, operations in elements:
             addresses = reversed(region) if descending else region
             for address in addresses:
@@ -393,8 +397,9 @@ def check_march(rom, capacity, kind, checkpoint=None, address=0, inject_after=0)
             assert (heartbeats[index + 2][0] - heartbeats[index + 1][0]) / 894886 > 1
     assert machine.relay[-1][1] == 0x34, 'March must leave motor off'
     assert not machine.sam & 0x8000
-    display = bytes(machine.ram[machine.ram_address(a)] for a in range(0x400, 0x600))
+    display = bytes(machine.ram[machine.ram_address(a)] for a in range(0x200))
     assert display == machine.screen_output, 'Diagnostic is not in the visible RAM page'
+    assert screen_line(machine, 15) == 'VERSION 1.0'
     if checkpoint is None:
         expected = list(march_trace(capacity * 1024))
         assert machine.trace == expected * 2, 'Wrong March-U ordering/coverage'
@@ -439,7 +444,7 @@ if __name__ == "__main__":
         check_march(image, capacity, kind)
     for checkpoint in range(1, 8):
         check_march(image, 4, '4x1', checkpoint, 0x0713)
-    for address in (0, 0x0400, 0x7FFF, 0x8000, 0xFFFF):
+    for address in (0, 0x01FF, 0x0200, 0x7FFF, 0x8000, 0x81FF, 0x8200, 0xFFFF):
         check_march(image, 64, '64x1', 4, address)
     check_march(image, 16, '16x4', 2, 0x1234)
     check_march(image, 4, '4x1', 4, 0x0713, inject_after=1)
